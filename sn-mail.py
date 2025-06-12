@@ -2,12 +2,14 @@
 import argparse
 import logging
 import os
+import smtplib
 import urllib.request
+import xml.etree.ElementTree as ET
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formatdate
 from pathlib import Path
-
-import feedparser
-
-import mailer
 
 parser = argparse.ArgumentParser(
     prog="sn-mail.py",
@@ -51,11 +53,12 @@ parser.add_argument(
 args = parser.parse_args()
 
 # Logging setup
-level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-level = getattr(logging, level_name, logging.INFO)
+levelName = os.getenv("LOG_LEVEL", "INFO").upper()
+level = getattr(logging, levelName, logging.INFO)
 logging.basicConfig(level=level, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# determine dir for lastFile and media
 if args.dir:
     dir = Path(args.dir)
 else:
@@ -64,6 +67,7 @@ else:
 # get number of last-sent episode
 lastFile = dir / args.lastfile
 logger.debug(f"Checking {lastFile} for last sent ep. #...")
+
 try:
     with open(lastFile, "r") as file:
         old = int(file.read())
@@ -88,11 +92,22 @@ else:
 
 # get most recent ep. #
 logger.debug("Retrieving podcast feed...")
+
+feedURL = "https://feeds.twit.tv/podcasts/sn.xml"
+
+with urllib.request.urlopen(feedURL) as u:
+    XMLFeed = u.read()
+
 latest = int(
-    feedparser.parse("https://feeds.twit.tv/podcasts/sn.xml")["entries"][0][
-        "podcast_episode"
-    ]
+    ET.fromstring(XMLFeed)
+    .find("./channel/item")
+    .find(
+        "podcast:episode",
+        namespaces={"podcast": "https://podcastindex.org/namespace/1.0"},
+    )
+    .text
 )
+
 logger.debug("Retrieved")
 logger.info(f"Most recent ep. {latest}")
 
@@ -110,10 +125,10 @@ if old != latest:
     # the normal mp3 is too large for Gmail
     logger.debug("Downloading audio...")
     audio = f"sn-{latest}-lq.mp3"
-    audioLink = f"https://media.grc.com/sn/{audio}"
+    audioURL = f"https://media.grc.com/sn/{audio}"
     audioFile = str(dir / audio)
     try:
-        urllib.request.urlretrieve(audioLink, audioFile)
+        urllib.request.urlretrieve(audioURL, audioFile)
     except urllib.error.HTTPError as e:
         logger.warning(f"Audio download failed: {e.code} {e.reason}")
     else:
@@ -122,27 +137,39 @@ if old != latest:
     # Download the show notes
     logger.debug("Downloading show notes...")
     pdf = f"sn-{latest}-notes.pdf"
-    pdfLink = f"https://www.grc.com/sn/{pdf}"
+    pdfURL = f"https://www.grc.com/sn/{pdf}"
     pdfFile = str(dir / pdf)
     try:
-        urllib.request.urlretrieve(pdfLink, pdfFile)
+        urllib.request.urlretrieve(pdfURL, pdfFile)
     except urllib.error.HTTPError as e:
         logger.warning(f"Notes download failed: {e.code} {e.reason}")
     else:
         logger.debug("Downloaded")
 
-    # Attach both files to an empty email and send
+    # Attach both files to an email and send
     logger.debug("Sending email...")
-    mailer.send(
-        args.username,
-        args.password,
-        args.server,
-        args.port,
-        args.recipients,
-        f"Security Now #{latest}",
-        args.body,
-        [audioFile, pdfFile],
-    )
+
+    msg = MIMEMultipart()
+    msg["From"] = args.username
+    msg["To"] = ", ".join(args.recipients)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Subject"] = f"Security Now #{latest}"
+
+    msg.attach(MIMEText(args.body))
+    for f in [audioFile, pdfFile]:
+        with open(f, "rb") as fil:
+            part = MIMEApplication(fil.read(), Name=os.path.basename(f))
+        part["Content-Disposition"] = 'attachment; filename="%s"' % os.path.basename(f)
+        msg.attach(part)
+
+    session = smtplib.SMTP(args.server, args.port)
+    session.ehlo()
+    session.starttls()
+    session.ehlo()
+    session.login(args.username, args.password)
+    session.sendmail(args.username, args.recipients, msg.as_string())
+    session.quit()
+
     logger.debug("Sent")
 
     # Update the lastfile
