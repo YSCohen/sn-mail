@@ -15,7 +15,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser(
     prog="sn-mail.py",
     description="Download and mail the most recent Security Now episode, if not already sent",
-    usage="%(prog)s [OPTIONS] USERNAME PASSWORD RECIPIENTS [RECIPIENTS ...]",
+    usage="%(prog)s [OPTIONS] USERNAME PASSWORD RECIPIENT [RECIPIENT ...]",
 )
 parser.add_argument("username", metavar="USERNAME", help="sender email username")
 parser.add_argument("password", metavar="PASSWORD", help="sender email password")
